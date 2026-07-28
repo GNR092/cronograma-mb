@@ -2,10 +2,10 @@
 FROM node:20-alpine AS builder
 WORKDIR /app
 
-ENV NODE_ENV=production
-
 COPY package*.json ./
 RUN npm ci
+
+ENV NODE_ENV=production
 
 COPY . .
 RUN npm run build
@@ -13,15 +13,10 @@ RUN npm run build
 # Production stage - Nginx serving static files
 FROM nginx:1.25-alpine AS runner
 
-RUN addgroup -S appgroup && adduser -S appuser -G appgroup
+RUN apk add --no-cache wget
 
 COPY --from=builder /app/out /usr/share/nginx/html
-COPY nginx.conf /etc/nginx/conf.d/default.conf
-
-RUN chown -R appuser:appgroup /usr/share/nginx/html /var/cache/nginx /var/run && \
-    chmod -R 755 /usr/share/nginx/html
-
-USER appuser
+COPY nginx.conf /etc/nginx/nginx.conf
 
 EXPOSE 80
 
