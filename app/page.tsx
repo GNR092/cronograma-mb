@@ -75,17 +75,6 @@ function fmtCell(ymd: string, fmt: 'short'|'long'): string {
   return `${d.getDate()} ${MONTH_AB[d.getMonth()]} ${d.getFullYear()}`
 }
 
-// ── Seed data ─────────────────────────────────────────────────────────────────
-const SEED: Task[] = [
-  { id:'1', name:'Planificación del proyecto',      startDate:'2026-07-28', duration:5,  notes:'' },
-  { id:'2', name:'Análisis de requerimientos',      startDate:'2026-08-02', duration:7,  notes:'' },
-  { id:'3', name:'Diseño del sistema',              startDate:'2026-08-09', duration:6,  notes:'' },
-  { id:'4', name:'Desarrollo del módulo principal', startDate:'2026-08-15', duration:10, notes:'' },
-  { id:'5', name:'Pruebas unitarias',               startDate:'2026-08-25', duration:5,  notes:'' },
-  { id:'6', name:'Integración y pruebas finales',   startDate:'2026-08-30', duration:4,  notes:'' },
-  { id:'7', name:'Despliegue y entrega',            startDate:'2026-09-03', duration:3,  notes:'' },
-]
-
 const PASSWORD = 'admin123'
 
 // ── Left-panel column widths ───────────────────────────────────────────────────
@@ -142,14 +131,12 @@ export default function GanttPage() {
 
   useEffect(() => {
     setMounted(true)
-    const s = localStorage.getItem('gantt_v1_tasks')
-    setTasks(s ? JSON.parse(s) : SEED)
     if (sessionStorage.getItem('gantt_auth') === '1') setIsLoggedIn(true)
+    fetch('/api/tasks')
+      .then(r => r.json())
+      .then(setTasks)
+      .catch(() => setTasks([]))
   }, [])
-
-  useEffect(() => {
-    if (mounted) localStorage.setItem('gantt_v1_tasks', JSON.stringify(tasks))
-  }, [tasks, mounted])
 
   // ── Date columns ────────────────────────────────────────────────────────────
   const allYMDs = tasks.flatMap(t => [t.startDate, endDateOf(t.startDate, t.duration)])
@@ -204,18 +191,39 @@ export default function GanttPage() {
   const handleLogout = () => { setIsLoggedIn(false); sessionStorage.removeItem('gantt_auth') }
   const openAdd = () => { setEditingTask(null); setForm({name:'',startDate:todayYMD(),duration:5 as number|'',notes:''}); setShowTaskModal(true) }
   const openEdit = (t: Task) => { setEditingTask(t); setForm({name:t.name,startDate:t.startDate,duration:t.duration,notes:t.notes}); setShowTaskModal(true) }
-  const saveTask = () => {
+  const saveTask = async () => {
     if (!form.name.trim()) return
     const dur = Number(form.duration)
     if (!dur || dur < 1) return
-    const data = { ...form, duration: dur }
-    if (editingTask) setTasks(p => p.map(t => t.id===editingTask.id ? {...t,...data} : t))
-    else setTasks(p => [...p, { id:Date.now().toString(), ...data }])
+    const payload = { name: form.name, startDate: form.startDate, duration: dur, notes: form.notes }
+    if (editingTask) {
+      await fetch(`/api/tasks/${editingTask.id}`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      })
+    } else {
+      await fetch('/api/tasks', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      })
+    }
+    const updated = await fetch('/api/tasks').then(r => r.json())
+    setTasks(updated)
     setShowTaskModal(false)
   }
-  const deleteTask = (id: string) => { if (confirm('¿Eliminar esta tarea?')) setTasks(p=>p.filter(t=>t.id!==id)) }
+  const deleteTask = async (id: string) => {
+    if (!confirm('¿Eliminar esta tarea?')) return
+    await fetch(`/api/tasks/${id}`, { method: 'DELETE' })
+    setTasks(prev => prev.filter(t => t.id !== id))
+  }
   const toggleNotes = (id: string) => { setOpenNotes(prev => { const n=new Set(prev); n.has(id)?n.delete(id):n.add(id); return n }) }
-  const updateNote = (id: string, note: string) => setTasks(p=>p.map(t=>t.id===id?{...t,notes:note}:t))
+  const updateNote = (id: string, note: string) => setTasks(p => p.map(t => t.id===id ? {...t, notes:note} : t))
+  const saveNote = (task: Task) => {
+    fetch(`/api/tasks/${task.id}`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: task.name, startDate: task.startDate, duration: task.duration, notes: task.notes }),
+    })
+  }
 
   if (!mounted) return null
 
@@ -441,6 +449,7 @@ export default function GanttPage() {
                                 <textarea
                                   value={task.notes}
                                   onChange={e => updateNote(task.id, e.target.value)}
+                                  onBlur={() => saveNote(task)}
                                   placeholder="Escribe notas o cambios..."
                                   style={{
                                     flex:1, background:'#0f0b1e',
