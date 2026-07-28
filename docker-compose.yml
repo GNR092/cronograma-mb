@@ -1,0 +1,7 @@
+services:
+  app:
+    build: .
+    container_name: cronogramamb
+    ports:
+      - "80:80"
+    restart: unless-stopped
