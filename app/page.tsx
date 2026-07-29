@@ -24,26 +24,44 @@ const P = {
   mBWknd:    '#2c2a18',
   todayBg:   '#2a2200',
   todayLine: '#d4af3755',
-  notesBg:   '#160f28',
-  noteBorder:'#5b21b6',
-  noteAccent:'#7c3aed',
-  noteText:  '#c4b5fd',
+  notesBg:   '#0e0e12',
 } as const
+
+// ── Note color themes ─────────────────────────────────────────────────────────
+const NC = {
+  purple: { bg: '#160f28', border: '#5b21b6', accent: '#7c3aed', text: '#c4b5fd', label: 'General' },
+  green:  { bg: '#0a1f0f', border: '#15803d', accent: '#16a34a', text: '#86efac', label: 'Avance' },
+  blue:   { bg: '#0a1628', border: '#1d4ed8', accent: '#2563eb', text: '#93c5fd', label: 'Info' },
+  yellow: { bg: '#1c1500', border: '#b45309', accent: '#ca8a04', text: '#fde68a', label: 'Alerta' },
+  red:    { bg: '#200808', border: '#991b1b', accent: '#dc2626', text: '#fca5a5', label: 'Urgente' },
+} as const
+type NoteColor = keyof typeof NC
 
 // ── Row heights (px) — MUST be equal in both panels ───────────────────────────
 const ROW_H   = 42
-const NOTES_H = 90
-const HDR1_H  = 24   // month label row
-const DAY_COL = 32   // each date column width
+const NOTES_H = 260
+const HDR1_H  = 24
+const DAY_COL = 32
 
 // ── Types ─────────────────────────────────────────────────────────────────────
+type NoteEntry = {
+  id: string
+  taskId: string
+  text: string
+  color: string
+  author: string
+  createdAt: string
+}
 type Task = {
   id: string
   name: string
   startDate: string
   duration: number
   notes: string
+  noteEntries: NoteEntry[]
 }
+type PendingNote = { author: string; color: NoteColor; text: string }
+const BLANK_PENDING: PendingNote = { author: '', color: 'purple', text: '' }
 
 // ── Date helpers ──────────────────────────────────────────────────────────────
 function parseLocal(ymd: string): Date {
@@ -53,8 +71,16 @@ function parseLocal(ymd: string): Date {
 function toYMD(d: Date): string {
   return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`
 }
+// Counts business days only (Mon–Fri); day 1 = startDate
 function endDateOf(start: string, dur: number): string {
-  const d = parseLocal(start); d.setDate(d.getDate() + dur - 1); return toYMD(d)
+  const d = parseLocal(start)
+  let count = 1
+  while (count < dur) {
+    d.setDate(d.getDate() + 1)
+    const dow = d.getDay()
+    if (dow !== 0 && dow !== 6) count++
+  }
+  return toYMD(d)
 }
 function todayYMD(): string { return toYMD(new Date()) }
 
@@ -74,11 +100,15 @@ function fmtCell(ymd: string, fmt: 'short'|'long'): string {
     return `${String(d.getDate()).padStart(2,'0')}/${String(d.getMonth()+1).padStart(2,'0')}/${String(d.getFullYear()).slice(2)}`
   return `${d.getDate()} ${MONTH_AB[d.getMonth()]} ${d.getFullYear()}`
 }
+function fmtNoteDate(iso: string): string {
+  const d = new Date(iso)
+  return `${d.getDate()} ${MONTH_AB[d.getMonth()]} ${String(d.getFullYear()).slice(2)}, ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`
+}
 
 const PASSWORD = 'admin123'
 
 // ── Left-panel column widths ───────────────────────────────────────────────────
-const W = { num: 40, name: 220, start: 100, days: 56, end: 100, actions: 120 }
+const W = { num: 40, name: 220, start: 100, days: 60, end: 100, actions: 120 }
 
 // ── Shared styles ─────────────────────────────────────────────────────────────
 const inp: React.CSSProperties = {
@@ -118,13 +148,14 @@ function btnGhost(flex?: boolean): React.CSSProperties {
 // ── Component ─────────────────────────────────────────────────────────────────
 export default function GanttPage() {
   const [tasks,         setTasks]         = useState<Task[]>([])
+  const [pendingNotes,  setPendingNotes]  = useState<Record<string, PendingNote>>({})
   const [isLoggedIn,    setIsLoggedIn]    = useState(false)
   const [showLogin,     setShowLogin]     = useState(false)
   const [password,      setPassword]      = useState('')
   const [loginError,    setLoginError]    = useState('')
   const [showTaskModal, setShowTaskModal] = useState(false)
   const [editingTask,   setEditingTask]   = useState<Task | null>(null)
-  const [form,          setForm]          = useState<{name:string;startDate:string;duration:number|'';notes:string}>({name:'',startDate:'',duration:5,notes:''})
+  const [form,          setForm]          = useState<{name:string;startDate:string;duration:number|'';notes:string;changeNote:string}>({name:'',startDate:'',duration:5,notes:'',changeNote:''})
   const [openNotes,     setOpenNotes]     = useState<Set<string>>(new Set())
   const [mounted,       setMounted]       = useState(false)
   const [dateFormat,    setDateFormat]    = useState<'short'|'long'>('short')
@@ -134,7 +165,7 @@ export default function GanttPage() {
     if (sessionStorage.getItem('gantt_auth') === '1') setIsLoggedIn(true)
     fetch('/api/tasks')
       .then(r => r.json())
-      .then(setTasks)
+      .then((data: Task[]) => setTasks(data.map(t => ({ ...t, noteEntries: t.noteEntries ?? [] }))))
       .catch(() => setTasks([]))
   }, [])
 
@@ -189,8 +220,8 @@ export default function GanttPage() {
     } else { setLoginError('Contraseña incorrecta.') }
   }
   const handleLogout = () => { setIsLoggedIn(false); sessionStorage.removeItem('gantt_auth') }
-  const openAdd = () => { setEditingTask(null); setForm({name:'',startDate:todayYMD(),duration:5 as number|'',notes:''}); setShowTaskModal(true) }
-  const openEdit = (t: Task) => { setEditingTask(t); setForm({name:t.name,startDate:t.startDate,duration:t.duration,notes:t.notes}); setShowTaskModal(true) }
+  const openAdd = () => { setEditingTask(null); setForm({name:'',startDate:todayYMD(),duration:5 as number|'',notes:'',changeNote:''}); setShowTaskModal(true) }
+  const openEdit = (t: Task) => { setEditingTask(t); setForm({name:t.name,startDate:t.startDate,duration:t.duration,notes:t.notes,changeNote:''}); setShowTaskModal(true) }
   const saveTask = async () => {
     if (!form.name.trim()) return
     const dur = Number(form.duration)
@@ -201,14 +232,20 @@ export default function GanttPage() {
         method: 'PUT', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
       })
+      if (form.changeNote.trim()) {
+        await fetch(`/api/tasks/${editingTask.id}/notes`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text: form.changeNote.trim(), color: 'blue', author: 'Admin' }),
+        })
+      }
     } else {
       await fetch('/api/tasks', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
       })
     }
-    const updated = await fetch('/api/tasks').then(r => r.json())
-    setTasks(updated)
+    const updated: Task[] = await fetch('/api/tasks').then(r => r.json())
+    setTasks(updated.map(t => ({ ...t, noteEntries: t.noteEntries ?? [] })))
     setShowTaskModal(false)
   }
   const deleteTask = async (id: string) => {
@@ -217,12 +254,29 @@ export default function GanttPage() {
     setTasks(prev => prev.filter(t => t.id !== id))
   }
   const toggleNotes = (id: string) => { setOpenNotes(prev => { const n=new Set(prev); n.has(id)?n.delete(id):n.add(id); return n }) }
-  const updateNote = (id: string, note: string) => setTasks(p => p.map(t => t.id===id ? {...t, notes:note} : t))
-  const saveNote = (task: Task) => {
-    fetch(`/api/tasks/${task.id}`, {
-      method: 'PUT', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: task.name, startDate: task.startDate, duration: task.duration, notes: task.notes }),
-    })
+
+  // ── Notes ────────────────────────────────────────────────────────────────────
+  const getPending = (id: string): PendingNote => pendingNotes[id] ?? BLANK_PENDING
+  const setPending = (id: string, patch: Partial<PendingNote>) =>
+    setPendingNotes(prev => ({ ...prev, [id]: { ...getPending(id), ...patch } }))
+
+  const addNote = async (task: Task) => {
+    const p = getPending(task.id)
+    const text = p.text.trim()
+    if (!text) return
+    const author = isLoggedIn ? 'Admin' : p.author.trim()
+    if (!author) return
+    const note: NoteEntry = await fetch(`/api/tasks/${task.id}/notes`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text, color: p.color, author }),
+    }).then(r => r.json())
+    setTasks(prev => prev.map(t => t.id === task.id ? { ...t, noteEntries: [...t.noteEntries, note] } : t))
+    setPending(task.id, { text: '' })
+  }
+
+  const deleteNote = async (taskId: string, noteId: string) => {
+    await fetch(`/api/tasks/${taskId}/notes/${noteId}`, { method: 'DELETE' })
+    setTasks(prev => prev.map(t => t.id === taskId ? { ...t, noteEntries: t.noteEntries.filter(n => n.id !== noteId) } : t))
   }
 
   if (!mounted) return null
@@ -239,7 +293,6 @@ export default function GanttPage() {
     verticalAlign: 'middle',
     ...extra,
   })
-  // Body cell style for left panel
   const lCell = (rowBg: string, extra?: React.CSSProperties): React.CSSProperties => ({
     background: rowBg, height: `${ROW_H}px`,
     borderBottom: `1px solid #242424`, borderRight: `1px solid #2a2a2a`,
@@ -309,21 +362,27 @@ export default function GanttPage() {
             {it.label}
           </div>
         ))}
-        <div style={{ display:'flex', alignItems:'center', gap:'7px', marginLeft:'4px' }}>
+        <div style={{ display:'flex', alignItems:'center', gap:'4px', marginLeft:'4px' }}>
+          {Object.entries(NC).map(([key, nc]) => (
+            <div key={key} title={nc.label} style={{ width:'10px', height:'10px', borderRadius:'50%', background:nc.accent }} />
+          ))}
+          <span style={{ fontSize:'11px', color:P.textDim, marginLeft:'3px' }}>Tipos de nota</span>
+        </div>
+        <div style={{ display:'flex', alignItems:'center', gap:'7px', marginLeft:'auto' }}>
           <span style={{ fontSize:'11px', color: dateFormat==='short' ? P.gold : P.textDim, fontWeight:'600' }}>28/07/26</span>
           <button
             onClick={() => setDateFormat(f => f==='short'?'long':'short')}
-            style={{ position:'relative', width:'36px', height:'19px', background: dateFormat==='long' ? P.noteAccent : '#3a3a3a', border:'none', borderRadius:'10px', cursor:'pointer', flexShrink:0 }}
+            style={{ position:'relative', width:'36px', height:'19px', background: dateFormat==='long' ? '#7c3aed' : '#3a3a3a', border:'none', borderRadius:'10px', cursor:'pointer', flexShrink:0 }}
           >
             <span style={{ position:'absolute', top:'2.5px', left: dateFormat==='long'?'19px':'2.5px', width:'14px', height:'14px', background:'#fff', borderRadius:'50%', display:'block' }} />
           </button>
-          <span style={{ fontSize:'11px', color: dateFormat==='long' ? P.noteAccent : P.textDim, fontWeight:'600' }}>Mar/Jul/2026</span>
+          <span style={{ fontSize:'11px', color: dateFormat==='long' ? '#7c3aed' : P.textDim, fontWeight:'600' }}>Mar/Jul/2026</span>
+          {!isLoggedIn && (
+            <button onClick={()=>setShowLogin(true)} style={{ marginLeft:'12px', background:'none', border:'none', cursor:'pointer', color:P.textDim, fontSize:'12px', textDecoration:'underline' }}>
+              Inicia sesión para editar
+            </button>
+          )}
         </div>
-        {!isLoggedIn && (
-          <button onClick={()=>setShowLogin(true)} style={{ marginLeft:'auto', background:'none', border:'none', cursor:'pointer', color:P.textDim, fontSize:'12px', textDecoration:'underline' }}>
-            Inicia sesión para editar
-          </button>
-        )}
       </div>
 
       {/* ── Two-panel Gantt ────────────────────────────────────────────────── */}
@@ -352,16 +411,14 @@ export default function GanttPage() {
                 {isLoggedIn && <col style={{ width:`${W.actions}px` }} />}
               </colgroup>
               <thead>
-                {/* Row 1: placeholder matching month-label height */}
                 <tr style={{ height:`${HDR1_H}px` }}>
                   <th colSpan={isLoggedIn ? 6 : 5} style={{ background:'#181600', borderBottom:`1px solid #252500`, borderRight:`1px solid #2a2a2a`, padding:0 }} />
                 </tr>
-                {/* Row 2: column labels */}
                 <tr style={{ height:`${hdr2H}px` }}>
                   <th style={lHdr({ textAlign:'center', fontSize:'11px', color:P.textDim })}>#</th>
                   <th style={lHdr({ textAlign:'left', paddingLeft:'14px' })}>Actividad / Tarea</th>
                   <th style={lHdr({ textAlign:'center' })}>Inicio</th>
-                  <th style={lHdr({ textAlign:'center' })}>Días</th>
+                  <th style={lHdr({ textAlign:'center', fontSize:'11px' })}>Días H.</th>
                   <th style={lHdr({ textAlign:'center', borderRight: isLoggedIn ? `1px solid #2a2a2a` : 'none' })}>Fin</th>
                   {isLoggedIn && <th style={lHdr({ textAlign:'center', borderRight:'none' })}>Acciones</th>}
                 </tr>
@@ -372,6 +429,8 @@ export default function GanttPage() {
                   const rowBg = idx % 2 === 0 ? P.rowEven : P.rowOdd
                   const endYMD = endDateOf(task.startDate, task.duration)
                   const num = String(idx+1).padStart(2,'0')
+                  const pending = getPending(task.id)
+                  const noteCount = task.noteEntries.length
                   return (
                     <Fragment key={task.id}>
                       <tr style={{ height:`${ROW_H}px` }}>
@@ -382,21 +441,24 @@ export default function GanttPage() {
                         <td style={lCell(rowBg, { padding:0 })}>
                           <div style={{ display:'flex', alignItems:'center', height:`${ROW_H}px` }}>
                             <div style={{ width:'3px', height:'100%', background:`linear-gradient(180deg,${P.gold}99,${P.goldDark}33)`, flexShrink:0 }} />
-                            <span style={{ fontSize:'14px', fontWeight:'600', color:P.text, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', flex:1, padding:'0 8px' }}>
+                            <span
+                              title={task.name}
+                              style={{ fontSize:'14px', fontWeight:'600', color:P.text, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', flex:1, padding:'0 8px' }}
+                            >
                               {task.name}
                             </span>
                             <button
                               onClick={() => toggleNotes(task.id)}
                               style={{
                                 flexShrink:0, marginRight:'8px',
-                                background: notesOpen ? `${P.noteAccent}25` : task.notes ? `${P.noteAccent}12` : 'transparent',
-                                border:`1px solid ${notesOpen||task.notes ? P.noteAccent+'88' : '#333'}`,
+                                background: notesOpen ? '#7c3aed25' : noteCount>0 ? '#7c3aed12' : 'transparent',
+                                border:`1px solid ${notesOpen||noteCount>0 ? '#7c3aed88' : '#333'}`,
                                 borderRadius:'10px', padding:'2px 7px',
-                                color: notesOpen||task.notes ? P.noteAccent : P.textDim,
+                                color: notesOpen||noteCount>0 ? '#7c3aed' : P.textDim,
                                 fontSize:'10px', fontWeight:'600', cursor:'pointer', whiteSpace:'nowrap',
                               }}
                             >
-                              {notesOpen ? '▼ Notas' : '▶ Notas'}
+                              {notesOpen ? '▼' : '▶'} {noteCount > 0 ? noteCount : ''} Notas
                             </button>
                           </div>
                         </td>
@@ -431,39 +493,103 @@ export default function GanttPage() {
                         )}
                       </tr>
 
-                      {/* Notes row — left panel shows content */}
+                      {/* Notes row */}
                       {notesOpen && (
                         <tr style={{ height:`${NOTES_H}px` }}>
                           <td colSpan={isLoggedIn ? 6 : 5} style={{
-                            background:P.notesBg, height:`${NOTES_H}px`,
-                            borderBottom:`1px solid ${P.noteBorder}44`,
-                            borderLeft:`3px solid ${P.noteAccent}`,
-                            padding:'10px 16px', verticalAlign:'top',
+                            background: P.notesBg,
+                            height:`${NOTES_H}px`,
+                            borderBottom:`1px solid #2a2a2a`,
+                            borderLeft:`3px solid #7c3aed`,
+                            padding:0, verticalAlign:'top', overflow:'hidden',
                           }}>
-                            <div style={{ display:'flex', alignItems:'flex-start', gap:'12px' }}>
-                              <div style={{ display:'flex', alignItems:'center', gap:'5px', marginTop:'4px', flexShrink:0 }}>
-                                <span style={{ fontSize:'13px' }}>📝</span>
-                                <span style={{ color:P.noteAccent, fontWeight:'700', fontSize:'10px', letterSpacing:'1.5px', textTransform:'uppercase' }}>Notas</span>
-                              </div>
-                              {isLoggedIn ? (
-                                <textarea
-                                  value={task.notes}
-                                  onChange={e => updateNote(task.id, e.target.value)}
-                                  onBlur={() => saveNote(task)}
-                                  placeholder="Escribe notas o cambios..."
-                                  style={{
-                                    flex:1, background:'#0f0b1e',
-                                    border:`1px solid ${P.noteBorder}`,
-                                    borderRadius:'6px', color:P.noteText, fontSize:'13px',
-                                    padding:'7px 10px', height:`${NOTES_H - 24}px`,
-                                    resize:'none', outline:'none', fontFamily:'inherit',
-                                  }}
-                                />
-                              ) : (
-                                <p style={{ margin:'4px 0 0', fontSize:'13px', color: task.notes ? P.noteText : `${P.noteAccent}66`, fontStyle: task.notes?'normal':'italic' }}>
-                                  {task.notes || 'Sin notas.'}
-                                </p>
+                            <div style={{ display:'flex', flexDirection:'column', height:`${NOTES_H}px`, padding:'8px 12px 6px', boxSizing:'border-box' }}>
+
+                              {/* Task description (from edit form) */}
+                              {task.notes && (
+                                <div style={{ flexShrink:0, fontSize:'11px', color:'#888', borderBottom:'1px solid #222', paddingBottom:'5px', marginBottom:'5px', overflow:'hidden', maxHeight:'32px', display:'flex', gap:'6px', alignItems:'flex-start' }}>
+                                  <span style={{ flexShrink:0, color:'#555' }}>📋</span>
+                                  <span style={{ overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{task.notes}</span>
+                                </div>
                               )}
+
+                              {/* Note entries */}
+                              <div style={{ flex:1, overflowY:'auto', display:'flex', flexDirection:'column', gap:'4px', paddingRight:'2px' }}>
+                                {task.noteEntries.length === 0 && !task.notes && (
+                                  <p style={{ margin:'6px 0', fontSize:'12px', color:'#404040', fontStyle:'italic' }}>
+                                    Sin notas aún. Sé el primero en dejar una.
+                                  </p>
+                                )}
+                                {task.noteEntries.map(n => {
+                                  const nc = NC[n.color as NoteColor] ?? NC.purple
+                                  return (
+                                    <div key={n.id} style={{
+                                      borderLeft:`3px solid ${nc.accent}`,
+                                      background: nc.bg,
+                                      borderRadius:'0 4px 4px 0',
+                                      padding:'4px 8px',
+                                      position:'relative',
+                                      flexShrink:0,
+                                    }}>
+                                      <div style={{ fontSize:'10px', color:'#555', marginBottom:'2px', paddingRight:'20px' }}>
+                                        <span style={{ color: nc.accent, fontWeight:'700' }}>{n.author}</span>
+                                        {' · '}{fmtNoteDate(n.createdAt)}
+                                        <span style={{ marginLeft:'5px', fontSize:'9px', color:'#3a3a3a', fontStyle:'italic' }}>{nc.label}</span>
+                                      </div>
+                                      <div style={{ fontSize:'12px', color: nc.text, lineHeight:1.4 }}>{n.text}</div>
+                                      {isLoggedIn && (
+                                        <button
+                                          onClick={() => deleteNote(task.id, n.id)}
+                                          style={{ position:'absolute', top:'4px', right:'6px', background:'none', border:'none', color:'#444', cursor:'pointer', fontSize:'11px', lineHeight:1, padding:'0 2px' }}
+                                          title="Eliminar nota"
+                                        >✕</button>
+                                      )}
+                                    </div>
+                                  )
+                                })}
+                              </div>
+
+                              {/* Add note form */}
+                              <div style={{ flexShrink:0, borderTop:'1px solid #222', paddingTop:'6px', display:'flex', gap:'5px', alignItems:'center' }}>
+                                {!isLoggedIn && (
+                                  <input
+                                    placeholder="Tu nombre *"
+                                    value={pending.author}
+                                    onChange={e => setPending(task.id, { author: e.target.value })}
+                                    style={{ width:'86px', background:'#0c0c10', border:'1px solid #333', borderRadius:'4px', color:P.text, fontSize:'11px', padding:'4px 6px', outline:'none', flexShrink:0 }}
+                                  />
+                                )}
+                                {/* Color picker dots */}
+                                <div style={{ display:'flex', gap:'3px', flexShrink:0 }}>
+                                  {(Object.keys(NC) as NoteColor[]).map(key => (
+                                    <button
+                                      key={key}
+                                      onClick={() => setPending(task.id, { color: key })}
+                                      title={NC[key].label}
+                                      style={{
+                                        width:'13px', height:'13px', borderRadius:'50%',
+                                        background: NC[key].accent,
+                                        border: pending.color === key ? '2px solid #fff' : '2px solid transparent',
+                                        cursor:'pointer', padding:0, flexShrink:0,
+                                      }}
+                                    />
+                                  ))}
+                                </div>
+                                <input
+                                  placeholder={isLoggedIn ? 'Escribe una nota...' : 'Escribe una nota... (Enter para enviar)'}
+                                  value={pending.text}
+                                  onChange={e => setPending(task.id, { text: e.target.value })}
+                                  onKeyDown={e => e.key === 'Enter' && addNote(task)}
+                                  style={{ flex:1, background:'#0c0c10', border:'1px solid #333', borderRadius:'4px', color:P.text, fontSize:'11px', padding:'4px 7px', outline:'none', minWidth:0 }}
+                                />
+                                <button
+                                  onClick={() => addNote(task)}
+                                  title="Agregar nota"
+                                  style={{ background:'#7c3aed', color:'#fff', border:'none', borderRadius:'4px', padding:'4px 10px', fontSize:'12px', fontWeight:'700', cursor:'pointer', flexShrink:0 }}
+                                >
+                                  +
+                                </button>
+                              </div>
                             </div>
                           </td>
                         </tr>
@@ -489,7 +615,6 @@ export default function GanttPage() {
                 {dayColumns.map(y => <col key={y} style={{ width:`${DAY_COL}px`, minWidth:`${DAY_COL}px` }} />)}
               </colgroup>
               <thead>
-                {/* Row 1: month labels */}
                 <tr style={{ height:`${HDR1_H}px` }}>
                   {monthGroups.map(grp => {
                     const even = isEvenMonth(grp.firstYmd)
@@ -507,7 +632,6 @@ export default function GanttPage() {
                     )
                   })}
                 </tr>
-                {/* Row 2: day cells */}
                 <tr style={{ height:`${hdr2H}px` }}>
                   {dayColumns.map(ymd => {
                     const today   = isToday(ymd)
@@ -539,7 +663,6 @@ export default function GanttPage() {
                   const rowBg     = idx % 2 === 0 ? P.rowEven : P.rowOdd
                   return (
                     <Fragment key={task.id}>
-                      {/* Gantt bar row */}
                       <tr style={{ height:`${ROW_H}px` }}>
                         {dayColumns.map((ymd, i) => {
                           const active  = isActive(task, ymd)
@@ -572,13 +695,12 @@ export default function GanttPage() {
                         })}
                       </tr>
 
-                      {/* Notes row — right panel shows empty matching row */}
                       {notesOpen && (
                         <tr style={{ height:`${NOTES_H}px` }}>
                           <td colSpan={dayColumns.length} style={{
                             height:`${NOTES_H}px`,
                             background: P.notesBg,
-                            borderBottom:`1px solid ${P.noteBorder}22`,
+                            borderBottom:`1px solid #222`,
                           }} />
                         </tr>
                       )}
@@ -617,7 +739,7 @@ export default function GanttPage() {
       {/* ── Task modal ─────────────────────────────────────────────────────── */}
       {showTaskModal && (
         <div style={overlay} onClick={()=>setShowTaskModal(false)}>
-          <div style={{ ...modal, width:'460px' }} onClick={e=>e.stopPropagation()}>
+          <div style={{ ...modal, width:'460px', maxHeight:'92vh', overflowY:'auto' }} onClick={e=>e.stopPropagation()}>
             <div style={{ display:'flex', alignItems:'center', gap:'12px', marginBottom:'24px' }}>
               <div style={{ width:'3px', height:'26px', background:`linear-gradient(180deg,${P.goldLight},${P.goldDark})`, borderRadius:'2px' }} />
               <h2 style={{ color:P.gold, fontSize:'18px', fontWeight:'700', letterSpacing:'1px' }}>
@@ -630,14 +752,25 @@ export default function GanttPage() {
             <label style={{...lbl,marginTop:'14px'}}>Fecha de inicio</label>
             <input type="date" value={form.startDate}
               onChange={e=>setForm(p=>({...p,startDate:e.target.value}))} style={inp} />
-            <label style={{...lbl,marginTop:'14px'}}>Duración (días)</label>
+            <label style={{...lbl,marginTop:'14px'}}>Duración (días hábiles)</label>
             <input type="number" min={1} value={form.duration}
               onChange={e=>{const v=e.target.value;setForm(p=>({...p,duration:v===''?'':parseInt(v)}))}}
               style={inp} />
-            <label style={{...lbl,marginTop:'14px'}}>Notas</label>
+            <label style={{...lbl,marginTop:'14px'}}>Descripción / Contexto</label>
             <textarea value={form.notes} onChange={e=>setForm(p=>({...p,notes:e.target.value}))}
-              placeholder="Notas o comentarios..."
-              style={{...inp,minHeight:'70px',resize:'vertical',fontFamily:'inherit'}} />
+              placeholder="Notas o comentarios generales..."
+              style={{...inp,minHeight:'60px',resize:'vertical',fontFamily:'inherit'}} />
+            {editingTask && (
+              <>
+                <label style={{...lbl,marginTop:'14px'}}>Nota del cambio <span style={{ color:'#555', textTransform:'none', letterSpacing:0 }}>(opcional — se guardará en el historial)</span></label>
+                <input
+                  value={form.changeNote}
+                  onChange={e=>setForm(p=>({...p,changeNote:e.target.value}))}
+                  placeholder="¿Qué cambió y por qué?"
+                  style={{...inp, borderColor:'#1d4ed8'}}
+                />
+              </>
+            )}
             <div style={{ display:'flex', gap:'10px', marginTop:'22px' }}>
               <button
                 onClick={saveTask}

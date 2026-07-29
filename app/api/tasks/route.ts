@@ -2,7 +2,10 @@ import { NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
 
 export async function GET() {
-  const tasks = await prisma.task.findMany({ orderBy: { createdAt: 'asc' } })
+  const tasks = await prisma.task.findMany({
+    orderBy: { startDate: 'asc' },
+    include: { noteEntries: { orderBy: { createdAt: 'asc' } } },
+  })
   return NextResponse.json(tasks)
 }
 
