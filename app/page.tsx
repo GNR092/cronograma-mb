@@ -52,6 +52,15 @@ type NoteEntry = {
   author: string
   createdAt: string
 }
+type DayNoteMeta = { id: string; date: string }
+type DayNoteFileEntry = { id: string; fileUrl: string; fileType: string; fileName: string }
+type DayNoteFull = {
+  id: string; taskId: string; date: string
+  title: string; text: string
+  files: DayNoteFileEntry[]
+  author: string; createdAt: string
+}
+type PendingFile = { fileUrl: string; fileType: string; fileName: string }
 type Task = {
   id: string
   name: string
@@ -59,6 +68,7 @@ type Task = {
   duration: number
   notes: string
   noteEntries: NoteEntry[]
+  dayNotes: DayNoteMeta[]
 }
 type PendingNote = { author: string; color: NoteColor; text: string }
 const BLANK_PENDING: PendingNote = { author: '', color: 'purple', text: '' }
@@ -147,25 +157,31 @@ function btnGhost(flex?: boolean): React.CSSProperties {
 
 // ── Component ─────────────────────────────────────────────────────────────────
 export default function GanttPage() {
-  const [tasks,         setTasks]         = useState<Task[]>([])
-  const [pendingNotes,  setPendingNotes]  = useState<Record<string, PendingNote>>({})
-  const [isLoggedIn,    setIsLoggedIn]    = useState(false)
-  const [showLogin,     setShowLogin]     = useState(false)
-  const [password,      setPassword]      = useState('')
-  const [loginError,    setLoginError]    = useState('')
-  const [showTaskModal, setShowTaskModal] = useState(false)
-  const [editingTask,   setEditingTask]   = useState<Task | null>(null)
-  const [form,          setForm]          = useState<{name:string;startDate:string;duration:number|'';notes:string;changeNote:string}>({name:'',startDate:'',duration:5,notes:'',changeNote:''})
-  const [openNotes,     setOpenNotes]     = useState<Set<string>>(new Set())
-  const [mounted,       setMounted]       = useState(false)
-  const [dateFormat,    setDateFormat]    = useState<'short'|'long'>('short')
+  const [tasks,          setTasks]          = useState<Task[]>([])
+  const [pendingNotes,   setPendingNotes]   = useState<Record<string, PendingNote>>({})
+  const [isLoggedIn,     setIsLoggedIn]     = useState(false)
+  const [showLogin,      setShowLogin]      = useState(false)
+  const [password,       setPassword]       = useState('')
+  const [loginError,     setLoginError]     = useState('')
+  const [showTaskModal,  setShowTaskModal]  = useState(false)
+  const [editingTask,    setEditingTask]    = useState<Task | null>(null)
+  const [form,           setForm]           = useState<{name:string;startDate:string;duration:number|'';notes:string;changeNote:string}>({name:'',startDate:'',duration:5,notes:'',changeNote:''})
+  const [openNotes,      setOpenNotes]      = useState<Set<string>>(new Set())
+  const [mounted,        setMounted]        = useState(false)
+  const [dateFormat,     setDateFormat]     = useState<'short'|'long'>('short')
+  const [activeDayCell,  setActiveDayCell]  = useState<{ task: Task; date: string } | null>(null)
+  const [activeDayNote,  setActiveDayNote]  = useState<DayNoteFull | null>(null)
+  const [dayNoteLoading, setDayNoteLoading] = useState(false)
+  const [dayNoteMode,    setDayNoteMode]    = useState<'view'|'add'|'edit'>('view')
+  const [dayNoteForm,    setDayNoteForm]    = useState<{ title: string; text: string }>({ title: '', text: '' })
+  const [pendingFiles,   setPendingFiles]   = useState<PendingFile[]>([])
 
   useEffect(() => {
     setMounted(true)
     if (sessionStorage.getItem('gantt_auth') === '1') setIsLoggedIn(true)
     fetch('/api/tasks')
       .then(r => r.json())
-      .then((data: Task[]) => setTasks(data.map(t => ({ ...t, noteEntries: t.noteEntries ?? [] }))))
+      .then((data: Task[]) => setTasks(data.map(t => ({ ...t, noteEntries: t.noteEntries ?? [], dayNotes: t.dayNotes ?? [] }))))
       .catch(() => setTasks([]))
   }, [])
 
@@ -245,7 +261,7 @@ export default function GanttPage() {
       })
     }
     const updated: Task[] = await fetch('/api/tasks').then(r => r.json())
-    setTasks(updated.map(t => ({ ...t, noteEntries: t.noteEntries ?? [] })))
+    setTasks(updated.map(t => ({ ...t, noteEntries: t.noteEntries ?? [], dayNotes: t.dayNotes ?? [] })))
     setShowTaskModal(false)
   }
   const deleteTask = async (id: string) => {
@@ -277,6 +293,100 @@ export default function GanttPage() {
   const deleteNote = async (taskId: string, noteId: string) => {
     await fetch(`/api/tasks/${taskId}/notes/${noteId}`, { method: 'DELETE' })
     setTasks(prev => prev.map(t => t.id === taskId ? { ...t, noteEntries: t.noteEntries.filter(n => n.id !== noteId) } : t))
+  }
+
+  // ── Day evidence (DayNote) ──────────────────────────────────────────────────
+  const hasDayNote     = (task: Task, ymd: string) => task.dayNotes.some(n => n.date === ymd)
+  const getDayNoteMeta = (task: Task, ymd: string) => task.dayNotes.find(n => n.date === ymd)
+
+  const openDayCell = async (task: Task, ymd: string) => {
+    const meta = getDayNoteMeta(task, ymd)
+    if (!meta && !isLoggedIn) return
+    setActiveDayCell({ task, date: ymd })
+    setPendingFiles([])
+    if (meta) {
+      setDayNoteLoading(true)
+      setDayNoteMode('view')
+      const full: DayNoteFull = await fetch(`/api/daynotes/${meta.id}`).then(r => r.json())
+      setActiveDayNote(full)
+      setDayNoteForm({ title: full.title, text: full.text })
+      setDayNoteLoading(false)
+    } else {
+      setActiveDayNote(null)
+      setDayNoteForm({ title: '', text: '' })
+      setDayNoteMode('add')
+    }
+  }
+
+  const closeDayModal = () => { setActiveDayCell(null); setActiveDayNote(null); setPendingFiles([]) }
+
+  const handleFilesChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files ?? [])
+    files.forEach(file => {
+      if (file.size > 5 * 1024 * 1024) { alert(`"${file.name}" supera el límite de 5 MB`); return }
+      const reader = new FileReader()
+      reader.onload = () => {
+        const type = file.type.startsWith('image/') ? 'image' : 'pdf'
+        setPendingFiles(p => [...p, { fileUrl: reader.result as string, fileType: type, fileName: file.name }])
+      }
+      reader.readAsDataURL(file)
+    })
+    e.target.value = ''
+  }
+
+  const removePendingFile = (idx: number) => setPendingFiles(p => p.filter((_, i) => i !== idx))
+
+  const openFile = (f: DayNoteFileEntry | PendingFile) => {
+    const [meta, b64] = f.fileUrl.split(',')
+    const mime = meta.match(/:(.*?);/)?.[1] ?? (f.fileType === 'pdf' ? 'application/pdf' : 'image/jpeg')
+    const bytes = atob(b64)
+    const arr = new Uint8Array(bytes.length)
+    for (let i = 0; i < bytes.length; i++) arr[i] = bytes.charCodeAt(i)
+    const url = URL.createObjectURL(new Blob([arr], { type: mime }))
+    window.open(url, '_blank')
+  }
+
+  const removeExistingFile = async (fileId: string) => {
+    await fetch(`/api/dayfiles/${fileId}`, { method: 'DELETE' })
+    setActiveDayNote(prev => prev ? { ...prev, files: prev.files.filter(f => f.id !== fileId) } : null)
+  }
+
+  const saveDayNote = async () => {
+    if (!activeDayCell) return
+    const { task, date } = activeDayCell
+    // Upsert the note (title + text)
+    const saved: DayNoteFull = await fetch('/api/daynotes', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ taskId: task.id, date, title: dayNoteForm.title, text: dayNoteForm.text }),
+    }).then(r => r.json())
+    // Upload pending files
+    if (pendingFiles.length > 0) {
+      const newFiles: DayNoteFileEntry[] = await fetch(`/api/daynotes/${saved.id}/files`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ files: pendingFiles }),
+      }).then(r => r.json())
+      saved.files = [...(saved.files ?? []), ...newFiles]
+    }
+    // Update tasks list (add meta if new)
+    setTasks(prev => prev.map(t => {
+      if (t.id !== task.id) return t
+      const idx = t.dayNotes.findIndex(n => n.date === date)
+      const meta: DayNoteMeta = { id: saved.id, date: saved.date }
+      if (idx >= 0) { const dn = [...t.dayNotes]; dn[idx] = meta; return { ...t, dayNotes: dn } }
+      return { ...t, dayNotes: [...t.dayNotes, meta] }
+    }))
+    closeDayModal()
+  }
+
+  const deleteDayNote = async () => {
+    if (!activeDayCell || !activeDayNote) return
+    if (!confirm('¿Eliminar esta evidencia y todos sus archivos?')) return
+    await fetch(`/api/daynotes/${activeDayNote.id}`, { method: 'DELETE' })
+    setTasks(prev => prev.map(t => {
+      if (t.id !== activeDayCell.task.id) return t
+      return { ...t, dayNotes: t.dayNotes.filter(n => n.date !== activeDayCell.date) }
+    }))
+    closeDayModal()
   }
 
   if (!mounted) return null
@@ -665,18 +775,23 @@ export default function GanttPage() {
                     <Fragment key={task.id}>
                       <tr style={{ height:`${ROW_H}px` }}>
                         {dayColumns.map((ymd, i) => {
-                          const active  = isActive(task, ymd)
-                          const today   = isToday(ymd)
-                          const isFirst = active && (i===0 || !isActive(task, dayColumns[i-1]))
-                          const isLast  = active && (i===dayColumns.length-1 || !isActive(task, dayColumns[i+1]))
+                          const active    = isActive(task, ymd)
+                          const today     = isToday(ymd)
+                          const hasNote   = hasDayNote(task, ymd)
+                          const isFirst   = active && (i===0 || !isActive(task, dayColumns[i-1]))
+                          const isLast    = active && (i===dayColumns.length-1 || !isActive(task, dayColumns[i+1]))
+                          const clickable = active && (isLoggedIn || hasNote)
                           return (
-                            <td key={ymd} style={{
-                              height:`${ROW_H}px`, padding:0,
-                              background: cellBg(ymd),
-                              borderBottom:`1px solid #222`,
-                              borderRight:`1px solid #222`,
-                              position:'relative', overflow:'hidden',
-                            }}>
+                            <td key={ymd}
+                              onClick={() => clickable && openDayCell(task, ymd)}
+                              style={{
+                                height:`${ROW_H}px`, padding:0,
+                                background: cellBg(ymd),
+                                borderBottom:`1px solid #222`,
+                                borderRight:`1px solid #222`,
+                                position:'relative', overflow:'hidden',
+                                cursor: clickable ? 'pointer' : 'default',
+                              }}>
                               {active && (
                                 <div style={{
                                   position:'absolute', top:'8px', bottom:'8px',
@@ -687,8 +802,15 @@ export default function GanttPage() {
                                   boxShadow:`0 1px 6px rgba(212,175,55,0.3)`,
                                 }} />
                               )}
+                              {/* Red border + dot for cells with evidence */}
+                              {hasNote && (
+                                <>
+                                  <div style={{ position:'absolute', inset:0, boxShadow:'inset 0 0 0 2px #ef4444', zIndex:2, pointerEvents:'none' }} />
+                                  <div style={{ position:'absolute', top:3, right:3, width:5, height:5, borderRadius:'50%', background:'#ef4444', zIndex:3 }} />
+                                </>
+                              )}
                               {today && (
-                                <div style={{ position:'absolute', top:0, bottom:0, left:'50%', width:'1px', background:P.todayLine }} />
+                                <div style={{ position:'absolute', top:0, bottom:0, left:'50%', width:'1px', background:P.todayLine, zIndex:1 }} />
                               )}
                             </td>
                           )
@@ -732,6 +854,195 @@ export default function GanttPage() {
               <button onClick={handleLogin} style={btnGold(true)}>Entrar</button>
               <button onClick={()=>{setShowLogin(false);setLoginError('');setPassword('')}} style={btnGhost(true)}>Cancelar</button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── DayNote / Evidence modal ───────────────────────────────────────── */}
+      {activeDayCell && (
+        <div style={overlay} onClick={closeDayModal}>
+          <div style={{
+            background:'#140c0c', border:'1px solid #dc2626',
+            borderRadius:'12px', padding:'28px 32px', width:'560px', maxWidth:'96vw',
+            maxHeight:'90vh', overflowY:'auto',
+            boxShadow:'0 0 50px rgba(220,38,38,0.18)',
+          }} onClick={e => e.stopPropagation()}>
+
+            {/* Header */}
+            <div style={{ display:'flex', alignItems:'flex-start', gap:'12px', marginBottom:'20px' }}>
+              <div style={{ width:'3px', height:'32px', background:'linear-gradient(180deg,#f87171,#991b1b)', borderRadius:'2px', flexShrink:0, marginTop:'2px' }} />
+              <div style={{ flex:1 }}>
+                <h2 style={{ color:'#f87171', fontSize:'15px', fontWeight:'800', letterSpacing:'1.5px', textTransform:'uppercase' }}>
+                  {dayNoteMode === 'view' ? 'Evidencia' : dayNoteMode === 'add' ? 'Añadir Evidencia' : 'Editar Evidencia'}
+                </h2>
+                <p style={{ fontSize:'12px', color:'#555', marginTop:'3px' }}>
+                  {activeDayCell.task.name} <span style={{ color:'#333' }}>·</span> {fmtCell(activeDayCell.date, 'long')}
+                </p>
+              </div>
+              <button onClick={closeDayModal} style={{ background:'none', border:'none', color:'#555', cursor:'pointer', fontSize:'20px', lineHeight:1, padding:'0 2px', flexShrink:0 }}>✕</button>
+            </div>
+
+            {dayNoteLoading && (
+              <p style={{ color:'#444', textAlign:'center', padding:'28px 0', fontSize:'13px' }}>Cargando evidencia...</p>
+            )}
+
+            {/* VIEW MODE */}
+            {!dayNoteLoading && dayNoteMode === 'view' && activeDayNote && (
+              <div>
+                {activeDayNote.title && (
+                  <h3 style={{ fontSize:'19px', fontWeight:'700', color:P.text, marginBottom:'8px', lineHeight:1.3 }}>
+                    {activeDayNote.title}
+                  </h3>
+                )}
+                {activeDayNote.text && (
+                  <p style={{ fontSize:'14px', color:'#999', lineHeight:1.7, marginBottom:'16px', whiteSpace:'pre-wrap' }}>
+                    {activeDayNote.text}
+                  </p>
+                )}
+
+                {/* File gallery */}
+                {activeDayNote.files.length > 0 && (
+                  <div style={{ display:'flex', flexDirection:'column', gap:'10px', marginBottom:'14px' }}>
+                    {/* Image grid */}
+                    {activeDayNote.files.filter(f => f.fileType === 'image').length > 0 && (
+                      <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill,minmax(150px,1fr))', gap:'8px' }}>
+                        {activeDayNote.files.filter(f => f.fileType === 'image').map(f => (
+                          <div key={f.id} onClick={() => openFile(f)} title="Ver imagen"
+                            style={{ display:'block', borderRadius:'6px', overflow:'hidden', border:'1px solid #2a2a2a', background:'#0d0d0d', aspectRatio:'4/3', cursor:'pointer' }}>
+                            <img src={f.fileUrl} alt={f.fileName} style={{ width:'100%', height:'100%', objectFit:'cover', display:'block' }} />
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    {/* PDF links */}
+                    {activeDayNote.files.filter(f => f.fileType === 'pdf').map(f => (
+                      <button key={f.id} onClick={() => openFile(f)}
+                        style={{ display:'inline-flex', alignItems:'center', gap:'8px', padding:'10px 16px', background:'#1f0f0f', border:'1px solid #7f1d1d', borderRadius:'8px', color:'#f87171', fontSize:'13px', fontWeight:'600', cursor:'pointer' }}>
+                        📄 {f.fileName || 'Abrir PDF'}
+                      </button>
+                    ))}
+                  </div>
+                )}
+
+                <p style={{ fontSize:'11px', color:'#3a3a3a', marginTop:'10px' }}>
+                  {activeDayNote.author} · {fmtNoteDate(activeDayNote.createdAt)}
+                  {activeDayNote.files.length > 0 && ` · ${activeDayNote.files.length} archivo${activeDayNote.files.length > 1 ? 's' : ''}`}
+                </p>
+                {isLoggedIn && (
+                  <div style={{ display:'flex', gap:'10px', marginTop:'20px' }}>
+                    <button onClick={() => { setDayNoteMode('edit'); setPendingFiles([]) }} style={btnGhost(true)}>Editar</button>
+                    <button onClick={deleteDayNote} style={{ ...btnGhost(true), color:'#f87171', borderColor:'#7f1d1d' }}>Eliminar evidencia</button>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* ADD / EDIT MODE */}
+            {!dayNoteLoading && (dayNoteMode === 'add' || dayNoteMode === 'edit') && (
+              <div>
+                <label style={lbl}>Título</label>
+                <input
+                  value={dayNoteForm.title}
+                  onChange={e => setDayNoteForm(p => ({ ...p, title: e.target.value }))}
+                  placeholder="Ej. Actualización entregada al cliente"
+                  style={inp} autoFocus
+                />
+                <label style={{ ...lbl, marginTop:'14px' }}>Descripción</label>
+                <textarea
+                  value={dayNoteForm.text}
+                  onChange={e => setDayNoteForm(p => ({ ...p, text: e.target.value }))}
+                  placeholder="Describe lo que se realizó..."
+                  style={{ ...inp, minHeight:'68px', resize:'vertical', fontFamily:'inherit' }}
+                />
+
+                {/* Existing files (edit mode) */}
+                {dayNoteMode === 'edit' && activeDayNote && activeDayNote.files.length > 0 && (
+                  <div style={{ marginTop:'16px' }}>
+                    <label style={lbl}>Archivos actuales</label>
+                    <div style={{ display:'flex', flexWrap:'wrap', gap:'8px' }}>
+                      {activeDayNote.files.map(f => (
+                        <div key={f.id} style={{ position:'relative', borderRadius:'6px', overflow:'visible' }}>
+                          {f.fileType === 'image' ? (
+                            <div style={{ width:'90px', height:'70px', borderRadius:'6px', overflow:'hidden', border:'1px solid #333', background:'#0d0d0d' }}>
+                              <img src={f.fileUrl} alt={f.fileName} style={{ width:'100%', height:'100%', objectFit:'cover' }} />
+                            </div>
+                          ) : (
+                            <div style={{ width:'90px', height:'70px', display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', border:'1px solid #333', borderRadius:'6px', background:'#1f0f0f', gap:'4px' }}>
+                              <span style={{ fontSize:'22px' }}>📄</span>
+                              <span style={{ fontSize:'9px', color:'#888', textAlign:'center', padding:'0 4px', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', width:'82px' }}>{f.fileName}</span>
+                            </div>
+                          )}
+                          <button
+                            onClick={() => removeExistingFile(f.id)}
+                            title="Eliminar archivo"
+                            style={{ position:'absolute', top:'-6px', right:'-6px', width:'18px', height:'18px', borderRadius:'50%', background:'#dc2626', border:'none', color:'#fff', fontSize:'10px', cursor:'pointer', display:'flex', alignItems:'center', justifyContent:'center', fontWeight:'700', zIndex:10 }}
+                          >✕</button>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* New files picker */}
+                <div style={{ marginTop:'16px' }}>
+                  <label style={lbl}>
+                    {dayNoteMode === 'edit' ? 'Añadir más archivos' : 'Fotos o PDFs de evidencia'}
+                    <span style={{ marginLeft:'6px', color:'#3a3a3a', textTransform:'none', letterSpacing:0 }}>(múltiples · máx. 5 MB c/u)</span>
+                  </label>
+                  <input
+                    type="file" multiple accept="image/*,.pdf"
+                    onChange={handleFilesChange}
+                    style={{ display:'block', color:'#888', fontSize:'13px', marginBottom:'10px', cursor:'pointer' }}
+                  />
+                  {/* Pending files preview */}
+                  {pendingFiles.length > 0 && (
+                    <div style={{ display:'flex', flexWrap:'wrap', gap:'8px', marginTop:'6px' }}>
+                      {pendingFiles.map((f, i) => (
+                        <div key={i} style={{ position:'relative' }}>
+                          {f.fileType === 'image' ? (
+                            <div onClick={() => openFile(f)} title="Ver imagen" style={{ width:'90px', height:'70px', borderRadius:'6px', overflow:'hidden', border:'1px solid #444', background:'#0d0d0d', cursor:'pointer' }}>
+                              <img src={f.fileUrl} alt={f.fileName} style={{ width:'100%', height:'100%', objectFit:'cover' }} />
+                            </div>
+                          ) : (
+                            <div style={{ width:'90px', height:'70px', display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', border:'1px solid #444', borderRadius:'6px', background:'#1f0f0f', gap:'4px' }}>
+                              <span style={{ fontSize:'22px' }}>📄</span>
+                              <span style={{ fontSize:'9px', color:'#888', textAlign:'center', padding:'0 4px', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', width:'82px' }}>{f.fileName}</span>
+                            </div>
+                          )}
+                          <button
+                            onClick={() => removePendingFile(i)}
+                            title="Quitar"
+                            style={{ position:'absolute', top:'-6px', right:'-6px', width:'18px', height:'18px', borderRadius:'50%', background:'#555', border:'none', color:'#fff', fontSize:'10px', cursor:'pointer', display:'flex', alignItems:'center', justifyContent:'center', fontWeight:'700', zIndex:10 }}
+                          >✕</button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                <div style={{ display:'flex', gap:'10px', marginTop:'22px' }}>
+                  <button
+                    onClick={saveDayNote}
+                    disabled={!dayNoteForm.title.trim()}
+                    style={{
+                      ...btnGold(true),
+                      background:'linear-gradient(135deg,#ef4444,#991b1b)',
+                      opacity: !dayNoteForm.title.trim() ? 0.4 : 1,
+                      cursor: !dayNoteForm.title.trim() ? 'not-allowed' : 'pointer',
+                    }}
+                  >
+                    Guardar evidencia
+                    {pendingFiles.length > 0 && ` (${pendingFiles.length} archivo${pendingFiles.length > 1 ? 's' : ''})`}
+                  </button>
+                  <button
+                    onClick={() => dayNoteMode === 'edit' ? setDayNoteMode('view') : closeDayModal()}
+                    style={btnGhost(true)}
+                  >
+                    Cancelar
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         </div>
       )}

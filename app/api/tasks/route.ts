@@ -4,7 +4,10 @@ import { prisma } from '@/lib/prisma'
 export async function GET() {
   const tasks = await prisma.task.findMany({
     orderBy: { startDate: 'asc' },
-    include: { noteEntries: { orderBy: { createdAt: 'asc' } } },
+    include: {
+      noteEntries: { orderBy: { createdAt: 'asc' } },
+      dayNotes: { select: { id: true, date: true } },
+    },
   })
   return NextResponse.json(tasks)
 }
