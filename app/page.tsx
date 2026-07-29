@@ -210,7 +210,7 @@ export default function GanttPage() {
 
   const isWeekend = (ymd: string) => { const d = parseLocal(ymd); return d.getDay()===0||d.getDay()===6 }
   const isToday   = (ymd: string) => ymd === todayYMD()
-  const isActive  = (task: Task, ymd: string) => ymd >= task.startDate && ymd <= endDateOf(task.startDate, task.duration)
+  const isActive  = (task: Task, ymd: string) => !isWeekend(ymd) && ymd >= task.startDate && ymd <= endDateOf(task.startDate, task.duration)
 
   // ── Auth & CRUD ──────────────────────────────────────────────────────────────
   const handleLogin = () => {
