@@ -116,6 +116,7 @@ function fmtNoteDate(iso: string): string {
 }
 
 const PASSWORD = 'admin123'
+const MAX_FILE_SIZE_MB = 50
 
 // ── Left-panel column widths ───────────────────────────────────────────────────
 const W = { num: 40, name: 220, start: 100, days: 60, end: 100, actions: 120 }
@@ -329,7 +330,7 @@ export default function GanttPage() {
     const files = Array.from(e.target.files ?? [])
     const next: PendingFile[] = []
     for (const file of files) {
-      if (file.size > 5 * 1024 * 1024) { alert(`"${file.name}" supera el límite de 5 MB`); continue }
+      if (file.size > MAX_FILE_SIZE_MB * 1024 * 1024) { alert(`"${file.name}" supera el límite de ${MAX_FILE_SIZE_MB} MB`); continue }
       const fileType = file.type.startsWith('image/') ? 'image' : 'pdf'
       next.push({ file, previewUrl: URL.createObjectURL(file), fileType, fileName: file.name })
     }
@@ -994,7 +995,7 @@ export default function GanttPage() {
                 <div style={{ marginTop:'16px' }}>
                   <label style={lbl}>
                     {dayNoteMode === 'edit' ? 'Añadir más archivos' : 'Fotos o PDFs de evidencia'}
-                    <span style={{ marginLeft:'6px', color:'#3a3a3a', textTransform:'none', letterSpacing:0 }}>(múltiples · máx. 5 MB c/u)</span>
+                    <span style={{ marginLeft:'6px', color:'#3a3a3a', textTransform:'none', letterSpacing:0 }}>(múltiples · máx. {MAX_FILE_SIZE_MB} MB c/u)</span>
                   </label>
                   <input
                     type="file" multiple accept="image/*,.pdf"

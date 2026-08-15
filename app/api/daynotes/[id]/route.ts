@@ -1,9 +1,7 @@
 import type { NextRequest } from 'next/server'
 import { NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
-import { supabase, EVIDENCE_BUCKET } from '@/lib/supabase'
-
-const SIGNED_URL_TTL = 60 * 60 // 1 hour
+import { supabase, EVIDENCE_BUCKET, signFileUrls } from '@/lib/supabase'
 
 export async function GET(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params
@@ -13,13 +11,9 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
   })
   if (!dayNote) return new Response(null, { status: 404 })
 
-  const files = await Promise.all(
-    dayNote.files.map(async f => {
-      if (f.fileUrl.startsWith('data:')) return f // not yet migrated to storage
-      const { data } = await supabase.storage.from(EVIDENCE_BUCKET).createSignedUrl(f.fileUrl, SIGNED_URL_TTL)
-      return { ...f, fileUrl: data?.signedUrl ?? '' }
-    })
-  )
+  const paths = dayNote.files.map(f => f.fileUrl).filter(url => !url.startsWith('data:'))
+  const signed = await signFileUrls(paths)
+  const files = dayNote.files.map(f => f.fileUrl.startsWith('data:') ? f : { ...f, fileUrl: signed.get(f.fileUrl) ?? '' })
 
   return NextResponse.json({ ...dayNote, files })
 }

@@ -2,9 +2,7 @@ import { randomUUID } from 'crypto'
 import type { NextRequest } from 'next/server'
 import { NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
-import { supabase, EVIDENCE_BUCKET } from '@/lib/supabase'
-
-const SIGNED_URL_TTL = 60 * 60 // 1 hour
+import { supabase, EVIDENCE_BUCKET, signFileUrls } from '@/lib/supabase'
 
 function sanitizeName(name: string) {
   return name.replace(/[^a-zA-Z0-9.\-_]/g, '_')
@@ -32,12 +30,8 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     )
   }
 
-  const withSignedUrls = await Promise.all(
-    created.map(async f => {
-      const { data } = await supabase.storage.from(EVIDENCE_BUCKET).createSignedUrl(f.fileUrl, SIGNED_URL_TTL)
-      return { ...f, fileUrl: data?.signedUrl ?? '' }
-    })
-  )
+  const signed = await signFileUrls(created.map(f => f.fileUrl))
+  const withSignedUrls = created.map(f => ({ ...f, fileUrl: signed.get(f.fileUrl) ?? '' }))
 
   return NextResponse.json(withSignedUrls, { status: 201 })
 }
