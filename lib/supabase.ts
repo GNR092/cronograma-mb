@@ -1,12 +1,28 @@
-import { createClient } from '@supabase/supabase-js'
+import { createClient, type SupabaseClient } from '@supabase/supabase-js'
 
 export const EVIDENCE_BUCKET = 'evidencias'
 
-export const supabase = createClient(
-  process.env.SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!,
-  { auth: { persistSession: false } }
-)
+// Created lazily (on first real use, at request time) instead of at module load —
+// `next build` imports every route to collect page data, and SUPABASE_URL isn't
+// set as a build-time env var, which would crash the build if created eagerly.
+let client: SupabaseClient | undefined
+function getClient(): SupabaseClient {
+  if (!client) {
+    client = createClient(
+      process.env.SUPABASE_URL!,
+      process.env.SUPABASE_SERVICE_ROLE_KEY!,
+      { auth: { persistSession: false } }
+    )
+  }
+  return client
+}
+
+export const supabase = new Proxy({} as SupabaseClient, {
+  get: (_target, prop) => {
+    const c = getClient()
+    return Reflect.get(c, prop, c)
+  },
+})
 
 const SIGNED_URL_TTL = 60 * 60 // 1 hour
 
