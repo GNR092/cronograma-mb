@@ -2,15 +2,21 @@ services:
   app:
     build: .
     container_name: cronogramamb
-    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://mbuser:CHANGE_ME@dbpostgre:5432/cronograma
+    volumes:
+      - ./data/evidencias:/app/data/evidencias
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.cronogramamb.rule=Host(`yourdomain.com`)"
       - "traefik.http.routers.cronogramamb.entrypoints=websecure"
+      - "traefik.http.routers.cronogramamb.tls=true"
       - "traefik.http.routers.cronogramamb.tls.certresolver=letsencrypt"
-      - "traefik.http.services.cronogramamb.loadbalancer.server.port=80"
+      - "traefik.http.services.cronogramamb.loadbalancer.server.port=3000"
     networks:
+      - default
       - traefik-net
+    restart: unless-stopped
 
 networks:
   traefik-net:

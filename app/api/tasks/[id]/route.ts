@@ -2,8 +2,8 @@ import type { NextRequest } from 'next/server'
 import { NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
 
-export async function PUT(req: NextRequest, ctx: RouteContext<'/api/tasks/[id]'>) {
-  const { id } = await ctx.params
+export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const { id } = await params
   const body = await req.json()
   const task = await prisma.task.update({
     where: { id },
@@ -17,8 +17,8 @@ export async function PUT(req: NextRequest, ctx: RouteContext<'/api/tasks/[id]'>
   return NextResponse.json(task)
 }
 
-export async function DELETE(_req: NextRequest, ctx: RouteContext<'/api/tasks/[id]'>) {
-  const { id } = await ctx.params
+export async function DELETE(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const { id } = await params
   await prisma.task.delete({ where: { id } })
   return new Response(null, { status: 204 })
 }
