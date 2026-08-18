@@ -60,7 +60,7 @@ type DayNoteFull = {
   files: DayNoteFileEntry[]
   author: string; createdAt: string
 }
-type PendingFile = { file: File; previewUrl: string; fileType: string; fileName: string }
+type PendingFile = { fileUrl: string; fileType: string; fileName: string }
 type Task = {
   id: string
   name: string
@@ -116,7 +116,6 @@ function fmtNoteDate(iso: string): string {
 }
 
 const PASSWORD = 'admin123'
-const MAX_FILE_SIZE_MB = 50
 
 // ── Left-panel column widths ───────────────────────────────────────────────────
 const W = { num: 40, name: 220, start: 100, days: 60, end: 100, actions: 120 }
@@ -173,7 +172,6 @@ export default function GanttPage() {
   const [activeDayCell,  setActiveDayCell]  = useState<{ task: Task; date: string } | null>(null)
   const [activeDayNote,  setActiveDayNote]  = useState<DayNoteFull | null>(null)
   const [dayNoteLoading, setDayNoteLoading] = useState(false)
-  const [savingEvidence, setSavingEvidence] = useState(false)
   const [dayNoteMode,    setDayNoteMode]    = useState<'view'|'add'|'edit'>('view')
   const [dayNoteForm,    setDayNoteForm]    = useState<{ title: string; text: string }>({ title: '', text: '' })
   const [pendingFiles,   setPendingFiles]   = useState<PendingFile[]>([])
@@ -301,15 +299,11 @@ export default function GanttPage() {
   const hasDayNote     = (task: Task, ymd: string) => task.dayNotes.some(n => n.date === ymd)
   const getDayNoteMeta = (task: Task, ymd: string) => task.dayNotes.find(n => n.date === ymd)
 
-  const clearPendingFiles = () => {
-    setPendingFiles(prev => { prev.forEach(f => URL.revokeObjectURL(f.previewUrl)); return [] })
-  }
-
   const openDayCell = async (task: Task, ymd: string) => {
     const meta = getDayNoteMeta(task, ymd)
     if (!meta && !isLoggedIn) return
     setActiveDayCell({ task, date: ymd })
-    clearPendingFiles()
+    setPendingFiles([])
     if (meta) {
       setDayNoteLoading(true)
       setDayNoteMode('view')
@@ -324,28 +318,32 @@ export default function GanttPage() {
     }
   }
 
-  const closeDayModal = () => { setActiveDayCell(null); setActiveDayNote(null); clearPendingFiles() }
+  const closeDayModal = () => { setActiveDayCell(null); setActiveDayNote(null); setPendingFiles([]) }
 
   const handleFilesChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files ?? [])
-    const next: PendingFile[] = []
-    for (const file of files) {
-      if (file.size > MAX_FILE_SIZE_MB * 1024 * 1024) { alert(`"${file.name}" supera el límite de ${MAX_FILE_SIZE_MB} MB`); continue }
-      const fileType = file.type.startsWith('image/') ? 'image' : 'pdf'
-      next.push({ file, previewUrl: URL.createObjectURL(file), fileType, fileName: file.name })
-    }
-    setPendingFiles(p => [...p, ...next])
+    files.forEach(file => {
+      if (file.size > 5 * 1024 * 1024) { alert(`"${file.name}" supera el límite de 5 MB`); return }
+      const reader = new FileReader()
+      reader.onload = () => {
+        const type = file.type.startsWith('image/') ? 'image' : 'pdf'
+        setPendingFiles(p => [...p, { fileUrl: reader.result as string, fileType: type, fileName: file.name }])
+      }
+      reader.readAsDataURL(file)
+    })
     e.target.value = ''
   }
 
-  const removePendingFile = (idx: number) => setPendingFiles(p => {
-    const removed = p[idx]
-    if (removed) URL.revokeObjectURL(removed.previewUrl)
-    return p.filter((_, i) => i !== idx)
-  })
+  const removePendingFile = (idx: number) => setPendingFiles(p => p.filter((_, i) => i !== idx))
 
   const openFile = (f: DayNoteFileEntry | PendingFile) => {
-    window.open('fileUrl' in f ? f.fileUrl : f.previewUrl, '_blank')
+    const [meta, b64] = f.fileUrl.split(',')
+    const mime = meta.match(/:(.*?);/)?.[1] ?? (f.fileType === 'pdf' ? 'application/pdf' : 'image/jpeg')
+    const bytes = atob(b64)
+    const arr = new Uint8Array(bytes.length)
+    for (let i = 0; i < bytes.length; i++) arr[i] = bytes.charCodeAt(i)
+    const url = URL.createObjectURL(new Blob([arr], { type: mime }))
+    window.open(url, '_blank')
   }
 
   const removeExistingFile = async (fileId: string) => {
@@ -354,36 +352,30 @@ export default function GanttPage() {
   }
 
   const saveDayNote = async () => {
-    if (!activeDayCell || savingEvidence) return
-    setSavingEvidence(true)
-    try {
-      const { task, date } = activeDayCell
-      // Upsert the note (title + text)
-      const saved: DayNoteFull = await fetch('/api/daynotes', {
+    if (!activeDayCell) return
+    const { task, date } = activeDayCell
+    // Upsert the note (title + text)
+    const saved: DayNoteFull = await fetch('/api/daynotes', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ taskId: task.id, date, title: dayNoteForm.title, text: dayNoteForm.text }),
+    }).then(r => r.json())
+    // Upload pending files
+    if (pendingFiles.length > 0) {
+      const newFiles: DayNoteFileEntry[] = await fetch(`/api/daynotes/${saved.id}/files`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ taskId: task.id, date, title: dayNoteForm.title, text: dayNoteForm.text }),
+        body: JSON.stringify({ files: pendingFiles }),
       }).then(r => r.json())
-      // Upload pending files
-      if (pendingFiles.length > 0) {
-        const formData = new FormData()
-        pendingFiles.forEach(f => formData.append('files', f.file, f.fileName))
-        const newFiles: DayNoteFileEntry[] = await fetch(`/api/daynotes/${saved.id}/files`, {
-          method: 'POST', body: formData,
-        }).then(r => r.json())
-        saved.files = [...(saved.files ?? []), ...newFiles]
-      }
-      // Update tasks list (add meta if new)
-      setTasks(prev => prev.map(t => {
-        if (t.id !== task.id) return t
-        const idx = t.dayNotes.findIndex(n => n.date === date)
-        const meta: DayNoteMeta = { id: saved.id, date: saved.date }
-        if (idx >= 0) { const dn = [...t.dayNotes]; dn[idx] = meta; return { ...t, dayNotes: dn } }
-        return { ...t, dayNotes: [...t.dayNotes, meta] }
-      }))
-      closeDayModal()
-    } finally {
-      setSavingEvidence(false)
+      saved.files = [...(saved.files ?? []), ...newFiles]
     }
+    // Update tasks list (add meta if new)
+    setTasks(prev => prev.map(t => {
+      if (t.id !== task.id) return t
+      const idx = t.dayNotes.findIndex(n => n.date === date)
+      const meta: DayNoteMeta = { id: saved.id, date: saved.date }
+      if (idx >= 0) { const dn = [...t.dayNotes]; dn[idx] = meta; return { ...t, dayNotes: dn } }
+      return { ...t, dayNotes: [...t.dayNotes, meta] }
+    }))
+    closeDayModal()
   }
 
   const deleteDayNote = async () => {
@@ -938,7 +930,7 @@ export default function GanttPage() {
                 </p>
                 {isLoggedIn && (
                   <div style={{ display:'flex', gap:'10px', marginTop:'20px' }}>
-                    <button onClick={() => { setDayNoteMode('edit'); clearPendingFiles() }} style={btnGhost(true)}>Editar</button>
+                    <button onClick={() => { setDayNoteMode('edit'); setPendingFiles([]) }} style={btnGhost(true)}>Editar</button>
                     <button onClick={deleteDayNote} style={{ ...btnGhost(true), color:'#f87171', borderColor:'#7f1d1d' }}>Eliminar evidencia</button>
                   </div>
                 )}
@@ -995,7 +987,7 @@ export default function GanttPage() {
                 <div style={{ marginTop:'16px' }}>
                   <label style={lbl}>
                     {dayNoteMode === 'edit' ? 'Añadir más archivos' : 'Fotos o PDFs de evidencia'}
-                    <span style={{ marginLeft:'6px', color:'#3a3a3a', textTransform:'none', letterSpacing:0 }}>(múltiples · máx. {MAX_FILE_SIZE_MB} MB c/u)</span>
+                    <span style={{ marginLeft:'6px', color:'#3a3a3a', textTransform:'none', letterSpacing:0 }}>(múltiples · máx. 5 MB c/u)</span>
                   </label>
                   <input
                     type="file" multiple accept="image/*,.pdf"
@@ -1009,7 +1001,7 @@ export default function GanttPage() {
                         <div key={i} style={{ position:'relative' }}>
                           {f.fileType === 'image' ? (
                             <div onClick={() => openFile(f)} title="Ver imagen" style={{ width:'90px', height:'70px', borderRadius:'6px', overflow:'hidden', border:'1px solid #444', background:'#0d0d0d', cursor:'pointer' }}>
-                              <img src={f.previewUrl} alt={f.fileName} style={{ width:'100%', height:'100%', objectFit:'cover' }} />
+                              <img src={f.fileUrl} alt={f.fileName} style={{ width:'100%', height:'100%', objectFit:'cover' }} />
                             </div>
                           ) : (
                             <div style={{ width:'90px', height:'70px', display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', border:'1px solid #444', borderRadius:'6px', background:'#1f0f0f', gap:'4px' }}>
@@ -1031,22 +1023,20 @@ export default function GanttPage() {
                 <div style={{ display:'flex', gap:'10px', marginTop:'22px' }}>
                   <button
                     onClick={saveDayNote}
-                    disabled={!dayNoteForm.title.trim() || savingEvidence}
+                    disabled={!dayNoteForm.title.trim()}
                     style={{
                       ...btnGold(true),
                       background:'linear-gradient(135deg,#ef4444,#991b1b)',
-                      opacity: !dayNoteForm.title.trim() || savingEvidence ? 0.4 : 1,
-                      cursor: !dayNoteForm.title.trim() || savingEvidence ? 'not-allowed' : 'pointer',
+                      opacity: !dayNoteForm.title.trim() ? 0.4 : 1,
+                      cursor: !dayNoteForm.title.trim() ? 'not-allowed' : 'pointer',
                     }}
                   >
-                    {savingEvidence
-                      ? 'Guardando…'
-                      : `Guardar evidencia${pendingFiles.length > 0 ? ` (${pendingFiles.length} archivo${pendingFiles.length > 1 ? 's' : ''})` : ''}`}
+                    Guardar evidencia
+                    {pendingFiles.length > 0 && ` (${pendingFiles.length} archivo${pendingFiles.length > 1 ? 's' : ''})`}
                   </button>
                   <button
                     onClick={() => dayNoteMode === 'edit' ? setDayNoteMode('view') : closeDayModal()}
-                    disabled={savingEvidence}
-                    style={{ ...btnGhost(true), opacity: savingEvidence ? 0.4 : 1, cursor: savingEvidence ? 'not-allowed' : 'pointer' }}
+                    style={btnGhost(true)}
                   >
                     Cancelar
                   </button>
