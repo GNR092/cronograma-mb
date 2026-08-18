@@ -39,6 +39,9 @@ yarn-error.log*
 # docker compose (contiene config sensible, usa docker-compose.example.yml)
 docker-compose.yml
 
+# evidencias en disco (volumen ./data/evidencias)
+/data/
+
 # typescript
 *.tsbuildinfo
 next-env.d.ts
