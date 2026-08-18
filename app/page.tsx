@@ -177,6 +177,7 @@ export default function GanttPage() {
   const [dayNoteForm,    setDayNoteForm]    = useState<{ title: string; text: string }>({ title: '', text: '' })
   const [pendingFiles,   setPendingFiles]   = useState<PendingFile[]>([])
   const [savingEvidence, setSavingEvidence] = useState(false)
+  const [previewFile,    setPreviewFile]    = useState<DayNoteFileEntry | PendingFile | null>(null)
 
   useEffect(() => {
     setMounted(true)
@@ -185,6 +186,13 @@ export default function GanttPage() {
       .then(r => r.json())
       .then((data: Task[]) => setTasks(data.map(t => ({ ...t, noteEntries: t.noteEntries ?? [], dayNotes: t.dayNotes ?? [] }))))
       .catch(() => setTasks([]))
+  }, [])
+
+  // Close the image preview modal with Escape
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setPreviewFile(null) }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
   }, [])
 
   // ── Date columns ────────────────────────────────────────────────────────────
@@ -339,6 +347,8 @@ export default function GanttPage() {
   const removePendingFile = (idx: number) => setPendingFiles(p => p.filter((_, i) => i !== idx))
 
   const openFile = (f: DayNoteFileEntry | PendingFile) => {
+    // Images open in an inline preview modal; PDFs keep opening in a new tab.
+    if (f.fileType === 'image') { setPreviewFile(f); return }
     const [meta, b64] = f.fileUrl.split(',')
     const mime = meta.match(/:(.*?);/)?.[1] ?? (f.fileType === 'pdf' ? 'application/pdf' : 'image/jpeg')
     const bytes = atob(b64)
@@ -1104,6 +1114,48 @@ export default function GanttPage() {
               </button>
               <button onClick={()=>setShowTaskModal(false)} style={btnGhost(true)}>Cancelar</button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Image preview modal ─────────────────────────────────────────────── */}
+      {previewFile && (
+        <div
+          onClick={() => setPreviewFile(null)}
+          style={{
+            position:'fixed', inset:0, zIndex:1000,
+            background:'rgba(0,0,0,0.88)',
+            display:'flex', alignItems:'center', justifyContent:'center',
+            cursor:'zoom-out', padding:'24px',
+          }}
+        >
+          <div
+            onClick={e => e.stopPropagation()}
+            style={{
+              position:'relative', maxWidth:'95vw', maxHeight:'92vh',
+              display:'flex', flexDirection:'column', alignItems:'center', gap:'12px',
+            }}
+          >
+            <div style={{ display:'flex', alignItems:'center', gap:'12px', maxWidth:'95vw' }}>
+              <span style={{ color:'#ddd', fontSize:'13px', fontWeight:'600', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
+                {previewFile.fileName || 'Imagen'}
+              </span>
+              <button
+                onClick={() => setPreviewFile(null)}
+                title="Cerrar (Esc)"
+                style={{
+                  background:'#222', border:'1px solid #555', borderRadius:'6px',
+                  color:'#eee', fontSize:'16px', lineHeight:1, padding:'6px 10px', cursor:'pointer', flexShrink:0,
+                }}
+              >
+                ✕
+              </button>
+            </div>
+            <img
+              src={previewFile.fileUrl}
+              alt={previewFile.fileName || 'Imagen'}
+              style={{ maxWidth:'95vw', maxHeight:'82vh', objectFit:'contain', borderRadius:'8px', boxShadow:'0 8px 40px rgba(0,0,0,0.6)' }}
+            />
           </div>
         </div>
       )}
